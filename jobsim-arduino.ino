@@ -9,8 +9,6 @@
 #include "I2Cdev.h"
 #include "MPU6050_6Axis_MotionApps20.h"
 
-#define OUTPUT_READABLE_WORLDACCEL
-
 MPU6050 mpu;
 
 // MPU control/status vars
@@ -40,8 +38,6 @@ WebSocketClient webSocketClient;
 
 // Use WiFiClient class to create TCP connections
 WiFiClient client;
-
-int lastSend = 0;
 
 void setup() {
 
@@ -119,29 +115,49 @@ void setup() {
   }
 }
 
+int maxAccel = 0;
+unsigned long lastSend = 0;
 
 void loop() {
   String data;
 
   if (client.connected()) {
-    if (mpu.dmpGetCurrentFIFOPacket(fifoBuffer)) { // Get the Latest packet 
-        #ifdef OUTPUT_READABLE_WORLDACCEL
-            // display initial world-frame acceleration, adjusted to remove gravity
-            // and rotated based on known orientation from quaternion
-            mpu.dmpGetQuaternion(&q, fifoBuffer);
-            mpu.dmpGetAccel(&aa, fifoBuffer);
-            mpu.dmpGetGravity(&gravity, &q);
-            mpu.dmpGetLinearAccel(&aaReal, &aa, &gravity);
-            mpu.dmpGetLinearAccelInWorld(&aaWorld, &aaReal, &q);
-            data = "";
-            data += "aworld\t";
-            data += String(aaWorld.x);
-            data += "\t";
-            data += String(aaWorld.y);
-            data += "\t";
-            data += String(aaWorld.z);
-            webSocketClient.sendData(data);
-        #endif
+    if (mpu.dmpGetCurrentFIFOPacket(fifoBuffer)) {  // Get the Latest packet
+      // display initial world-frame acceleration, adjusted to remove gravity
+      // and rotated based on known orientation from quaternion
+      mpu.dmpGetQuaternion(&q, fifoBuffer);
+      mpu.dmpGetAccel(&aa, fifoBuffer);
+      mpu.dmpGetGravity(&gravity, &q);
+      mpu.dmpGetLinearAccel(&aaReal, &aa, &gravity);
+      mpu.dmpGetLinearAccelInWorld(&aaWorld, &aaReal, &q);
+
+      // Find maximum magnitude of acceleration
+      int maxAccelCurrent = max(abs(aaWorld.x), max(abs(aaWorld.y), abs(aaWorld.z)));
+      if (maxAccelCurrent > maxAccel) {
+        maxAccel = maxAccelCurrent;
+      }
+
+      unsigned long nowTime = millis();
+      if ((nowTime - lastSend) > 1000) {
+        webSocketClient.sendData("Max accel value " + String(maxAccel));
+        if (maxAccel > 10000) {
+          webSocketClient.sendData("BB happy thank u daddy kojima");
+        } else {
+          webSocketClient.sendData("BB crying norman reedus please shake");
+        }
+
+        maxAccel = 0;
+        lastSend = nowTime;
+      }
+      
+      // data = "";
+      // data += "aworld\t";
+      // data += String(aaWorld.x);
+      // data += "\t";
+      // data += String(aaWorld.y);
+      // data += "\t";
+      // data += String(aaWorld.z);
+      // webSocketClient.sendData(data);
     }
 
 
