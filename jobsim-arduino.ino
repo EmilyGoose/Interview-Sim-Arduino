@@ -4,10 +4,33 @@
 #include <WebSocketClient.h>
 
 // I like wire
-#include "Wire.h" // This library allows you to communicate with I2C devices.
+#include "Wire.h"  // This library allows you to communicate with I2C devices.
+
+#include "I2Cdev.h"
+#include "MPU6050_6Axis_MotionApps20.h"
+
+#define OUTPUT_READABLE_WORLDACCEL
+
+MPU6050 mpu;
+
+// MPU control/status vars
+bool dmpReady = false;   // set true if DMP init was successful
+uint8_t devStatus;       // return status after each device operation (0 = success, !0 = error)
+uint16_t packetSize;     // expected DMP packet size (default is 42 bytes)
+uint16_t fifoCount;      // count of all bytes currently in FIFO
+uint8_t fifoBuffer[64];  // FIFO storage buffer
+
+// orientation/motion vars
+Quaternion q;         // [w, x, y, z]         quaternion container
+VectorInt16 aa;       // [x, y, z]            accel sensor measurements
+VectorInt16 aaReal;   // [x, y, z]            gravity-free accel sensor measurements
+VectorInt16 aaWorld;  // [x, y, z]            world-frame accel sensor measurements
+VectorFloat gravity;  // [x, y, z]            gravity vector
+float euler[3];       // [psi, theta, phi]    Euler angle container
+float ypr[3];         // [yaw, pitch, roll]   yaw/pitch/roll container and gravity vector
 
 // Wifi connection vars
-const char* ssid     = "trans rights";
+const char* ssid = "trans rights";
 const char* password = "arduinotime";
 char path[] = "/";
 char host[] = "192.168.137.1";
@@ -18,33 +41,67 @@ WebSocketClient webSocketClient;
 // Use WiFiClient class to create TCP connections
 WiFiClient client;
 
-// MPU stuff
-const int MPU_ADDR = 0x68; // I2C address of the MPU-6050. If AD0 pin is set to HIGH, the I2C address will be 0x69.
-int16_t accelerometer_x, accelerometer_y, accelerometer_z; // variables for accelerometer raw data
-int16_t gyro_x, gyro_y, gyro_z; // variables for gyro raw data
-int16_t temperature; // variables for temperature data
+int lastSend = 0;
 
 void setup() {
+
+  // Set up serial bus
+  Wire.begin();
+  Wire.setClock(400000);
 
   Serial.begin(9600);
   delay(10);
 
+  // Initialize MPU
+  mpu.initialize();
+
+  devStatus = mpu.dmpInitialize();
+
+  // Gyro Offsets
+  mpu.setXGyroOffset(220);
+  mpu.setYGyroOffset(76);
+  mpu.setZGyroOffset(-85);
+
+  // make sure it worked (returns 0 if so)
+  if (devStatus == 0) {
+    // Calibration Time: generate offsets and calibrate our MPU6050
+    mpu.CalibrateAccel(6);
+    mpu.CalibrateGyro(6);
+    mpu.PrintActiveOffsets();
+    // turn on the DMP, now that it's ready
+    Serial.println(F("Enabling DMP..."));
+    mpu.setDMPEnabled(true);
+
+    dmpReady = true;
+
+    // get expected DMP packet size for later comparison
+    packetSize = mpu.dmpGetFIFOPacketSize();
+  } else {
+    // ERROR!
+    // 1 = initial memory load failed
+    // 2 = DMP configuration updates failed
+    // (if it's going to break, usually the code will be 1)
+    Serial.print(F("DMP Initialization failed (code "));
+    Serial.print(devStatus);
+    Serial.println(F(")"));
+  }
+
   // We start by connecting to a WiFi network
   WiFi.begin(ssid, password);
-  
+
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
   }
 
   delay(2500);
-  
+
   // Connect to the websocket server
   if (client.connect(host, port)) {
     Serial.println("Connected");
   } else {
     Serial.println("Connection failed.");
-    while(1) {
+    while (1) {
       // Hang on failure
     }
   }
@@ -56,64 +113,45 @@ void setup() {
     Serial.println("Handshake successful");
   } else {
     Serial.println("Handshake failed.");
-    while(1) {
+    while (1) {
       // Hang on failure
-    }  
+    }
   }
-
-  
-  // Begin transmission to the MPU-6050
-  Wire.begin();
-  Wire.beginTransmission(MPU_ADDR); // Begins a transmission to the I2C slave (GY-521 board)
-  Wire.write(0x6B); // PWR_MGMT_1 register
-  Wire.write(0); // set to zero (wakes up the MPU-6050)
-  Wire.endTransmission(true);
-
 }
 
 
 void loop() {
-
-  Wire.beginTransmission(MPU_ADDR);
-  Wire.write(0x3B); // starting with register 0x3B (ACCEL_XOUT_H) [MPU-6000 and MPU-6050 Register Map and Descriptions Revision 4.2, p.40]
-  Wire.endTransmission(false); // the parameter indicates that the Arduino will send a restart. As a result, the connection is kept active.
-  Wire.requestFrom(MPU_ADDR, 7*2, true); // request a total of 7*2=14 registers
-
-  // "Wire.read()<<8 | Wire.read();" means two registers are read and stored in the same variable
-  accelerometer_x = Wire.read()<<8 | Wire.read(); // reading registers: 0x3B (ACCEL_XOUT_H) and 0x3C (ACCEL_XOUT_L)
-  accelerometer_y = Wire.read()<<8 | Wire.read(); // reading registers: 0x3D (ACCEL_YOUT_H) and 0x3E (ACCEL_YOUT_L)
-  accelerometer_z = Wire.read()<<8 | Wire.read(); // reading registers: 0x3F (ACCEL_ZOUT_H) and 0x40 (ACCEL_ZOUT_L)
-  temperature = Wire.read()<<8 | Wire.read(); // reading registers: 0x41 (TEMP_OUT_H) and 0x42 (TEMP_OUT_L)
-  gyro_x = Wire.read()<<8 | Wire.read(); // reading registers: 0x43 (GYRO_XOUT_H) and 0x44 (GYRO_XOUT_L)
-  gyro_y = Wire.read()<<8 | Wire.read(); // reading registers: 0x45 (GYRO_YOUT_H) and 0x46 (GYRO_YOUT_L)
-  gyro_z = Wire.read()<<8 | Wire.read(); // reading registers: 0x47 (GYRO_ZOUT_H) and 0x48 (GYRO_ZOUT_L)
-  
-
   String data;
 
   if (client.connected()) {
-    
-    // webSocketClient.getData(data);
-    // if (data.length() > 0) {
-    //   Serial.print("Received data: ");
-    //   Serial.println(data);
-    // }
-    
-    // capture the value of analog 1, send it along
-    // pinMode(1, INPUT);
-    // data = String(analogRead(1));
-    data = "GYRO TIME\n" + String(gyro_x) + "\n" + String(gyro_y) + "\n" + String(gyro_z);
-    
-    webSocketClient.sendData(data);
-    
+    if (mpu.dmpGetCurrentFIFOPacket(fifoBuffer)) { // Get the Latest packet 
+        #ifdef OUTPUT_READABLE_WORLDACCEL
+            // display initial world-frame acceleration, adjusted to remove gravity
+            // and rotated based on known orientation from quaternion
+            mpu.dmpGetQuaternion(&q, fifoBuffer);
+            mpu.dmpGetAccel(&aa, fifoBuffer);
+            mpu.dmpGetGravity(&gravity, &q);
+            mpu.dmpGetLinearAccel(&aaReal, &aa, &gravity);
+            mpu.dmpGetLinearAccelInWorld(&aaWorld, &aaReal, &q);
+            data = "";
+            data += "aworld\t";
+            data += String(aaWorld.x);
+            data += "\t";
+            data += String(aaWorld.y);
+            data += "\t";
+            data += String(aaWorld.z);
+            webSocketClient.sendData(data);
+        #endif
+    }
+
+
   } else {
     Serial.println("Client disconnected.");
     while (1) {
       // Hang on disconnect.
     }
   }
-  
+
   // wait to fully let the client disconnect
-  delay(1000);
-  
+  delay(10);
 }
