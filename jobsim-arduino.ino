@@ -139,11 +139,12 @@ void loop() {
 
       unsigned long nowTime = millis();
       if ((nowTime - lastSend) > 1000) {
-        webSocketClient.sendData("Max accel value " + String(maxAccel));
         if (maxAccel > 10000) {
-          webSocketClient.sendData("BB happy thank u daddy kojima");
+          webSocketClient.sendData(String("2"));
+        } else if (maxAccel > 2000) {
+          webSocketClient.sendData(String("1"));
         } else {
-          webSocketClient.sendData("BB crying norman reedus please shake");
+          webSocketClient.sendData(String("0"));
         }
 
         maxAccel = 0;
